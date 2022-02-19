@@ -1,0 +1,259 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ManagementPack ContentReadable="true" SchemaVersion="2.0" OriginalSchemaVersion="1.1" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<Manifest>
+		<Identity>
+			<ID>Demo.ProcessPerformance</ID>
+			<Version>1.0.0.0</Version>
+		</Identity>
+		<Name>Demo.ProcessPerformance</Name>
+		<References>
+			<Reference Alias="SC">
+				<ID>Microsoft.SystemCenter.Library</ID>
+				<Version>7.0.8437.0</Version>
+				<PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+			</Reference>
+			<Reference Alias="Windows">
+				<ID>Microsoft.Windows.Library</ID>
+				<Version>7.5.8501.0</Version>
+				<PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+			</Reference>
+			<Reference Alias="Health">
+				<ID>System.Health.Library</ID>
+				<Version>7.0.8437.0</Version>
+				<PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+			</Reference>
+			<Reference Alias="System">
+				<ID>System.Library</ID>
+				<Version>7.5.8501.0</Version>
+				<PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+			</Reference>
+			<Reference Alias="Perf">
+				<ID>System.Performance.Library</ID>
+				<Version>7.0.8437.0</Version>
+				<PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+			</Reference>
+			<Reference Alias="MSDL">
+				<ID>Microsoft.SystemCenter.DataWarehouse.Library</ID>
+				<Version>7.2.11719.0</Version>
+				<PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+			</Reference>
+		</References>
+	</Manifest>
+	<TypeDefinitions>
+		<ModuleTypes>
+			<DataSourceModuleType ID="Demo.ProcessPerformance.Script.DS" Accessibility="Internal" Batching="false">
+				<Configuration>
+					<xsd:element minOccurs="1" name="IntervalSeconds" type="xsd:integer" xmlns:xsd="http://www.w3.org/2001/XMLSchema"></xsd:element>
+					<xsd:element minOccurs="0" name="SyncTime" type="xsd:string" xmlns:xsd="http://www.w3.org/2001/XMLSchema"></xsd:element>
+					<xsd:element minOccurs="1" name="TimeoutSeconds" type="xsd:integer" xmlns:xsd="http://www.w3.org/2001/XMLSchema"></xsd:element>
+				</Configuration>
+				<OverrideableParameters>
+					<OverrideableParameter ID="IntervalSeconds" Selector="$Config/IntervalSeconds$" ParameterType="int" />
+					<OverrideableParameter ID="SyncTime" Selector="$Config/SyncTime$" ParameterType="string" />
+					<OverrideableParameter ID="TimeoutSeconds" Selector="$Config/TimeoutSeconds$" ParameterType="int" />
+				</OverrideableParameters>
+				<ModuleImplementation Isolation="Any">
+					<Composite>
+						<MemberModules>
+							<DataSource ID="Scheduler" TypeID="System!System.Scheduler">
+								<Scheduler>
+									<SimpleReccuringSchedule>
+										<Interval Unit="Seconds">$Config/IntervalSeconds$</Interval>
+										<SyncTime>$Config/SyncTime$</SyncTime>
+									</SimpleReccuringSchedule>
+									<ExcludeDates></ExcludeDates>
+								</Scheduler>
+							</DataSource>
+							<ProbeAction ID="PA" TypeID="Windows!Microsoft.Windows.PowerShellPropertyBagTriggerOnlyProbe">
+								<ScriptName>Demo.ProcessPerformance.Script.DS.ps1</ScriptName>
+								<ScriptBody>
+#=================================================================================
+#  Monitoring script to gather the CPU and memory consumed by all processes related to an application
+#
+#  Kevin Holman
+#  v1.0
+#=================================================================================
+
+
+# Manual Testing section - put stuff here for manually testing script - typically parameters:
+#=================================================================================
+#=================================================================================
+
+
+# Constants section - modify stuff here:
+#=================================================================================
+# Assign script name variable for use in event logging.  
+# ScriptName should be the same as the ID of the module that the script is contained in
+$ScriptName = "Demo.ProcessPerformance.Script.DS.ps1"
+$EventID = "4477"
+#=================================================================================
+
+
+# Starting Script section - All scripts get this
+#=================================================================================
+# Gather the start time of the script
+$StartTime = Get-Date
+#Set variable to be used in logging events
+$whoami = whoami
+# Load MOMScript API
+$momapi = New-Object -comObject MOM.ScriptAPI
+#=================================================================================
+
+
+# PropertyBag Script section - Monitoring scripts get this
+#=================================================================================
+# Load SCOM PropertyBag function
+$bag = $momapi.CreatePropertyBag()
+#=================================================================================
+
+
+# Begin MAIN script section
+#=================================================================================
+#Clear any errors
+IF ($Error) {$Error.Clear()}
+
+#Define Process Name Wildcard
+[string]$ProcessNameWildCard = "svchost*"
+
+
+#CPU Section
+[int]$TotalCores = 0
+$LogicalCPUs = Get-WmiObject –class Win32_Processor
+FOREACH ($CPU in $LogicalCPUs)
+{
+  $Cores = $CPU.NumberOfLogicalProcessors
+  $TotalCores = $TotalCores += $Cores
+}
+
+#CPU Section. Divide the value from perfmon by the number of cores
+$ProcArr = (Get-Counter "\Process($ProcessNameWildCard)\% Processor Time").CounterSamples
+$ProcArrCount = $ProcArr.Count
+
+#PriveBytes Section
+[array]$ProcessPBArr = Get-Process -Name $ProcessNameWildCard | select PrivateMemorySize64
+[int]$ProcessPBArrCount = $ProcessPBArr.Count
+
+#Stop if error or null here because process is not running
+IF ($Error)
+{
+  $momapi.LogScriptEvent($ScriptName,$EventID,2,"`nError getting process data.  Error is ($Error).")
+  EXIT
+}
+
+[int]$CPUTotal = 0
+[int]$CPUTime = 0
+FOREACH ($Proc in $ProcArr)
+{
+  [int]$ProcCPUTime = $Proc.CookedValue
+  #Divide the process CPU value by the total number of cores to get real total consumption
+  $CPUTime = $ProcCPUTime / $TotalCores
+  #Keep a sum of all process CPU total
+  $CPUTotal += $CPUTime
+}
+
+#Set sum to zero
+$ProcessValueSumBytes = 0
+#Loop through each process and get sum of values
+FOREACH ($ProcessPBObj in $ProcessPBArr)
+{
+  $ProcessValue = $ProcessPBObj.PrivateMemorySize64
+  $ProcessValueSumBytes = $ProcessValueSumBytes + $ProcessValue
+}
+# Divide bytes value to get Megabytes
+$ProcessValueSumMBytes = $ProcessValueSumBytes / 1000000
+# Round the value to no decimals
+$ProcessValueSumMBytes = [math]::Round($ProcessValueSumMBytes)
+
+#Output PropertyBags
+$bag.AddValue("ProcessTotalCPU",$CPUTotal)
+$bag.AddValue("ProcessTotalPrivateMBytes",$ProcessValueSumMBytes)
+
+# Return all bags
+$bag
+
+$EndTime = Get-Date
+$ScriptTime = ($EndTime - $StartTime).TotalSeconds
+$momapi.LogScriptEvent($ScriptName,$EventID,0,"`nScript Completed. `nCPU Total: (). `nPrivate MBytes Total: ($ProcessValueSumMBytes). `nRunning as ($whoami). `nScript Runtime: ($ScriptTime) seconds.")  
+
+# End of script
+                                </ScriptBody>
+								<Parameters />								
+								<TimeoutSeconds>$Config/TimeoutSeconds$</TimeoutSeconds>
+							</ProbeAction>
+						</MemberModules>
+						<Composition>
+							<Node ID="PA">
+								<Node ID="Scheduler" />
+							</Node>
+						</Composition>
+					</Composite>
+				</ModuleImplementation>
+				<OutputType>System!System.PropertyBagData</OutputType>
+			</DataSourceModuleType>
+		</ModuleTypes>
+	</TypeDefinitions>
+	<Monitoring>
+		<Rules>
+		  <Rule ID="Demo.ProcessPerformance.ProcessPercentProcessor.PerformanceCollection.Rule" Enabled="true" Target="Windows!Microsoft.Windows.Server.OperatingSystem" ConfirmDelivery="false" Remotable="true" Priority="Normal" DiscardLevel="100">
+			<Category>PerformanceCollection</Category>
+			<DataSources>
+			  <DataSource ID="DS" TypeID="Demo.ProcessPerformance.Script.DS">
+				<IntervalSeconds>30</IntervalSeconds>
+				<SyncTime></SyncTime>
+				<TimeoutSeconds>120</TimeoutSeconds>
+			  </DataSource>
+			</DataSources>
+			<ConditionDetection ID="System.Performance.DataGenericMapper" TypeID="Perf!System.Performance.DataGenericMapper">
+			  <ObjectName>Process</ObjectName>
+			  <CounterName>% Processor Time</CounterName>
+			  <InstanceName>SvcHostProcesses_Total</InstanceName>
+			  <Value>$Data/Property[@Name='ProcessTotalCPU']$</Value>
+			</ConditionDetection>
+			<WriteActions>
+			  <WriteAction ID="WriteToDB" TypeID="SC!Microsoft.SystemCenter.CollectPerformanceData" />  <!-- Can be optional - collect this data to the Operations Database.  -->
+			  <WriteAction ID="WriteToDW" TypeID="MSDL!Microsoft.SystemCenter.DataWarehouse.PublishPerformanceData" />  <!-- Can be optional - collect this data to the Data Warehouse Database -->
+			</WriteActions>
+		  </Rule>
+		  <Rule ID="Demo.ProcessPerformance.ProcessPrivateBytes.PerformanceCollection.Rule" Enabled="true" Target="Windows!Microsoft.Windows.Server.OperatingSystem" ConfirmDelivery="false" Remotable="true" Priority="Normal" DiscardLevel="100">
+			<Category>PerformanceCollection</Category>
+			<DataSources>
+			  <DataSource ID="DS" TypeID="Demo.ProcessPerformance.Script.DS">
+				<IntervalSeconds>30</IntervalSeconds>
+				<SyncTime></SyncTime>
+				<TimeoutSeconds>120</TimeoutSeconds>
+			  </DataSource>
+			</DataSources>
+			<ConditionDetection ID="System.Performance.DataGenericMapper" TypeID="Perf!System.Performance.DataGenericMapper">
+			  <ObjectName>Process</ObjectName>
+			  <CounterName>Private MBytes</CounterName>
+			  <InstanceName>SvcHostProcesses_Total</InstanceName>
+			  <Value>$Data/Property[@Name='ProcessTotalPrivateMBytes']$</Value>
+			</ConditionDetection>
+			<WriteActions>
+			  <WriteAction ID="WriteToDB" TypeID="SC!Microsoft.SystemCenter.CollectPerformanceData" />  <!-- Can be optional - collect this data to the Operations Database.  -->
+			  <WriteAction ID="WriteToDW" TypeID="MSDL!Microsoft.SystemCenter.DataWarehouse.PublishPerformanceData" />  <!-- Can be optional - collect this data to the Data Warehouse Database -->
+			</WriteActions>
+		  </Rule>	  
+		</Rules>
+	</Monitoring>
+	<Presentation>
+		<StringResources>
+		</StringResources>
+	</Presentation>
+	<LanguagePacks>
+		<LanguagePack ID="ENU" IsDefault="true">
+			<DisplayStrings>
+				<DisplayString ElementID="Demo.ProcessPerformance">
+					<Name>Demo ProcessPerformance</Name>
+					<Description></Description>
+				</DisplayString>
+				<DisplayString ElementID="Demo.ProcessPerformance.ProcessPercentProcessor.PerformanceCollection.Rule">
+					<Name>Demo ProcessPerformance Process % Processor Time Performance Collection Rule</Name>
+				</DisplayString>
+				<DisplayString ElementID="Demo.ProcessPerformance.ProcessPrivateBytes.PerformanceCollection.Rule">
+					<Name>Demo ProcessPerformance Process Private Bytes Performance Collection Rule</Name>
+				</DisplayString>
+			</DisplayStrings>
+		</LanguagePack>
+	</LanguagePacks>
+</ManagementPack>
